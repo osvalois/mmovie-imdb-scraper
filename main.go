@@ -21,6 +21,9 @@ type MovieInfo struct {
 	ImageURL   string `json:"imageUrl"`
 }
 
+func getTop10SeriesHandler(w http.ResponseWriter, r *http.Request) {
+	getMoviesHandler(w, r, "user_rating,desc&type=tv_series")
+}
 func getMoviesHandler(w http.ResponseWriter, r *http.Request, sortOrder string) {
 	baseURL := "https://www.imdb.com/search/title/?groups=top_1000&view=simple&sort=%s&limit=10&start=0"
 	URLMovies := fmt.Sprintf(baseURL, sortOrder)
@@ -36,6 +39,7 @@ func getMoviesHandler(w http.ResponseWriter, r *http.Request, sortOrder string) 
 	}
 
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.5") // Set the Accept-Language header for English
 	response, err := client.Do(req)
 	if err != nil {
 		handleError(w, "GET failed with error", err)
@@ -137,10 +141,10 @@ func extractImageURL(html string) string {
 
 func main() {
 	// Configurar el manejador para la ruta "/getTop10Movies"
-	http.HandleFunc("/getTop10Movies", getTop10MoviesHandler)
+	http.HandleFunc("/scraper-imdb/getTop10Movies", getTop10MoviesHandler)
 	// Configurar el manejador para la ruta "/getTop10OfWeek"
-	http.HandleFunc("/getTop10FavoritesMovies", getTop10FavoritesMoviesHandler)
-
+	http.HandleFunc("/scraper-imdb/getTop10FavoritesMovies", getTop10FavoritesMoviesHandler)
+	http.HandleFunc("/scraper-imdb/getTop10Series", getTop10SeriesHandler)
 	// Iniciar el servidor en el puerto 8080
 	fmt.Println("Server listening on :8080...")
 	log.Fatal(http.ListenAndServe(":8080", nil))
