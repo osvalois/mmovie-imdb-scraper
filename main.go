@@ -5,13 +5,17 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/PuerkitoBio/goquery"
+	"github.com/gorilla/handlers"
 )
 
-// MovieInfo struct representa la información de una reseña de película
-type MovieInfo struct {
+var imdbHost = "https://www.imdb.com"
+
+type MediaInfo struct {
 	Name       string `json:"name"`
 	Stars      string `json:"stars"`
 	Date       string `json:"date"`
@@ -21,25 +25,71 @@ type MovieInfo struct {
 	ImageURL   string `json:"imageUrl"`
 }
 
-func getTop10SeriesHandler(w http.ResponseWriter, r *http.Request) {
-	getMoviesHandler(w, r, "user_rating,desc&type=tv_series")
+func extractStarsFromSVG(svg string) string {
+	parts := strings.SplitN(svg, ": ", 2)
+	if len(parts) > 1 {
+		return parts[1]
+	}
+	return ""
 }
-func getMoviesHandler(w http.ResponseWriter, r *http.Request, sortOrder string) {
-	baseURL := "https://www.imdb.com/search/title/?groups=top_1000&view=simple&sort=%s&limit=10&start=0"
-	URLMovies := fmt.Sprintf(baseURL, sortOrder)
 
-	movieInfos := make([]MovieInfo, 0)
+func extractImageURL(html string) string {
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+	if err != nil {
+		log.Println("Error parsing HTML:", err)
+		return ""
+	}
+	imageURL, exists := doc.Find(".ipc-media img").Attr("src")
+	if !exists {
+		log.Println("Error: Image URL not found")
+		return ""
+	}
 
-	// Obtener información de reseñas para cada película
+	return imageURL
+}
+
+func getSearchHandler(w http.ResponseWriter, r *http.Request, sortOrder string, mediaType string) {
+	queryParams := r.URL.Query()
+	limitStr := queryParams.Get("limit")
+	language := queryParams.Get("language")
+
+	title := queryParams.Get("title")
+	encodedTitle := url.QueryEscape(title)
+	limit, err := strconv.Atoi(limitStr)
+	if err != nil || limit <= 0 {
+		limit = 10
+	}
+	URLSearch := ""
+	if mediaType == "video-game" {
+
+		if encodedTitle != "" {
+			mediaSearch := "?title_type=video_game&release_date=1900-01-01,2012-01-01&sort=%s&title=%s"
+			baseURL := imdbHost + "/search/title/" + mediaSearch
+			URLSearch = fmt.Sprintf(baseURL, sortOrder, encodedTitle)
+		} else {
+			mediaSearch := "?title_type=video_game&release_date=1900-01-01,2012-01-01&sort=%s"
+			baseURL := imdbHost + "/search/title/" + mediaSearch
+			URLSearch = fmt.Sprintf(baseURL, sortOrder)
+		}
+		log.Println(URLSearch)
+	} else {
+		mediaSearch := "?groups=top_1000&view=simple&sort=%s&limit=%s"
+		baseURL := imdbHost + "/search/title/" + mediaSearch
+		URLSearch = fmt.Sprintf(baseURL, sortOrder, limit)
+		log.Println(URLSearch)
+	}
+
+	MediaInfos := make([]MediaInfo, 0)
+
 	client := &http.Client{}
-	req, err := http.NewRequest("GET", URLMovies, nil)
+	req, err := http.NewRequest("GET", URLSearch, nil)
 	if err != nil {
 		handleError(w, "Error creating request", err)
 		return
 	}
 
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36")
-	req.Header.Set("Accept-Language", "en-US,en;q=0.5") // Set the Accept-Language header for English
+	req.Header.Set("Accept-Language", language+";q=0.5")
 	response, err := client.Do(req)
 	if err != nil {
 		handleError(w, "GET failed with error", err)
@@ -74,78 +124,74 @@ func getMoviesHandler(w http.ResponseWriter, r *http.Request, sortOrder string) 
 		url, _ := s.Find(".ipc-lockup-overlay__screen").Parent().Attr("href")
 		usefulness := s.Find(".sc-f24f1c5c-7.oCwmv").Text()
 
-		// Obtener la URL de la imagen de la película
 		imageHTML, _ := s.Find(".ipc-media").Find("img").Parent().Parent().Html()
 		imageURL := extractImageURL(imageHTML)
 
-		// Crear una instancia de MovieInfo y agregarla a la lista
-		movieInfo := MovieInfo{
+		mediaInfo := MediaInfo{
 			Name:       name,
 			Stars:      stars,
 			Date:       date,
 			ReviewText: reviewText,
-			URL:        "https://www.imdb.com" + url,
+			URL:        imdbHost + url,
 			Usefulness: usefulness,
 			ImageURL:   imageURL,
 		}
 
-		movieInfos = append(movieInfos, movieInfo)
+		MediaInfos = append(MediaInfos, mediaInfo)
 	})
 
-	var top10Movies []MovieInfo
-	if len(movieInfos) >= 10 {
-		top10Movies = movieInfos[:10]
+	var topMovies []MediaInfo
+	if len(MediaInfos) >= limit {
+		topMovies = MediaInfos[:limit]
 	} else {
-		top10Movies = movieInfos
+		topMovies = MediaInfos
 	}
-
-	// Responder en formato JSON
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(top10Movies)
+	json.NewEncoder(w).Encode(topMovies)
 }
 
-func getTop10MoviesHandler(w http.ResponseWriter, r *http.Request) {
-	getMoviesHandler(w, r, "user_rating,desc")
+func moviesTop(w http.ResponseWriter, r *http.Request) {
+	getSearchHandler(w, r, "user_rating,desc", "video")
 }
 
-func getTop10FavoritesMoviesHandler(w http.ResponseWriter, r *http.Request) {
-	getMoviesHandler(w, r, "popularity,asc")
+func moviesFavorites(w http.ResponseWriter, r *http.Request) {
+	getSearchHandler(w, r, "popularity,desc", "video")
+}
+func moviesReleases(w http.ResponseWriter, r *http.Request) {
+	getSearchHandler(w, r, "release_date,desc", "video")
 }
 
+func moviesCompany(w http.ResponseWriter, r *http.Request) {
+	queryParams := r.URL.Query()
+	company := queryParams.Get("company")
+	getSearchHandler(w, r, "num_votes,desc&feature,tv_series,short,tv_movie,tv_miniseries,tv_short,tv_special,tv_episode&companies="+company, "video")
+}
+
+// Games
+func searchGameByTitle(w http.ResponseWriter, r *http.Request) {
+	getSearchHandler(w, r, "moviemeter,asc", "video-game")
+}
+func searchGameByTop(w http.ResponseWriter, r *http.Request) {
+	getSearchHandler(w, r, "user_rating,desc", "video-game")
+}
 func handleError(w http.ResponseWriter, message string, err error) {
 	log.Printf("%s: %v", message, err)
 	http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 }
-
-func extractStarsFromSVG(svg string) string {
-	return strings.Replace(svg, "IMDb rating: ", "", 1)
-}
-
-// Función auxiliar para extraer la URL de la imagen de una cadena HTML
-func extractImageURL(html string) string {
-	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
-	if err != nil {
-		log.Println("Error parsing HTML:", err)
-		return ""
-	}
-
-	// Seleccionar el atributo src de la etiqueta img dentro de la clase .ipc-media
-	imageURL, exists := doc.Find(".ipc-media img").Attr("src")
-	if !exists {
-		log.Println("Error: Image URL not found")
-		return ""
-	}
-
-	return imageURL
-}
-
 func main() {
-	// Configurar el manejador para la ruta "/getTop10Movies"
-	http.HandleFunc("/scraper-imdb/getTop10Movies", getTop10MoviesHandler)
-	// Configurar el manejador para la ruta "/getTop10OfWeek"
-	http.HandleFunc("/scraper-imdb/getTop10FavoritesMovies", getTop10FavoritesMoviesHandler)
-	http.HandleFunc("/scraper-imdb/getTop10Series", getTop10SeriesHandler)
-	// Iniciar el servidor en el puerto 8080
+	http.HandleFunc("/imdb/movies/top", moviesTop)
+	http.HandleFunc("/imdb/movies/favorites", moviesFavorites)
+	http.HandleFunc("/imdb/movies/releases", moviesReleases)
+	http.HandleFunc("/imdb/movies/company", moviesCompany)
+
+	//Games
+	http.HandleFunc("/imdb/games/title", searchGameByTitle)
+	http.HandleFunc("/imdb/games/top", searchGameByTop)
+	corsHandler := handlers.CORS(
+		handlers.AllowedOrigins([]string{"*"}),
+		handlers.AllowedMethods([]string{"GET", "HEAD", "OPTIONS", "POST", "PUT"}),
+		handlers.AllowedHeaders([]string{"Content-Type"}),
+	)(http.DefaultServeMux)
 	fmt.Println("Server listening on :8080...")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	log.Fatal(http.ListenAndServe(":8080", corsHandler))
 }
